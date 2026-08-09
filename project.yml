@@ -1,0 +1,121 @@
+name: CodexUsage
+
+options:
+  bundleIdPrefix: com.local
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+configs:
+  Debug: debug
+  Release: release
+
+configFiles:
+  Debug: Config/Shared.xcconfig
+  Release: Config/Shared.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    CODE_SIGN_STYLE: Automatic
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.1.0
+
+targets:
+  CodexUsageApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/Core
+      - path: Sources/App
+    entitlements:
+      path: Config/CodexUsageApp.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)com.local.CodexUsage.shared
+    info:
+      path: Config/CodexUsageApp-Info.plist
+      properties:
+        CFBundleDisplayName: Codex Usage
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSUIElement: true
+        LSApplicationCategoryType: public.app-category.utilities
+        AppGroupIdentifier: $(TeamIdentifierPrefix)com.local.CodexUsage.shared
+    dependencies:
+      - target: CodexUsageWidget
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.CodexUsage
+        PRODUCT_NAME: CodexUsage
+        GENERATE_INFOPLIST_FILE: false
+        ENABLE_APP_SANDBOX: false
+        ENABLE_HARDENED_RUNTIME: true
+
+  CodexUsageWidget:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Sources/Core
+        excludes:
+          - AppServerClient.swift
+          - CodexLocator.swift
+      - path: Sources/Widget
+    entitlements:
+      path: Config/CodexUsageWidget.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)com.local.CodexUsage.shared
+    info:
+      path: Config/CodexUsageWidget-Info.plist
+      properties:
+        CFBundleDisplayName: Codex Usage
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        AppGroupIdentifier: $(TeamIdentifierPrefix)com.local.CodexUsage.shared
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.CodexUsage.Widget
+        PRODUCT_NAME: CodexUsageWidget
+        GENERATE_INFOPLIST_FILE: false
+        ENABLE_APP_SANDBOX: true
+        ENABLE_HARDENED_RUNTIME: true
+        SKIP_INSTALL: true
+
+  CodexUsageCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Sources/Core
+      - path: Tests/CoreTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.CodexUsage.CoreTests
+        GENERATE_INFOPLIST_FILE: true
+        CODE_SIGNING_ALLOWED: false
+
+schemes:
+  CodexUsage:
+    build:
+      targets:
+        CodexUsageApp: all
+        CodexUsageWidget: all
+        CodexUsageCoreTests: [test]
+    test:
+      targets:
+        - CodexUsageCoreTests
+
+  CodexUsageIntegration:
+    build:
+      targets:
+        CodexUsageCoreTests: [test]
+    test:
+      targets:
+        - CodexUsageCoreTests
+      environmentVariables:
+        RUN_CODEX_INTEGRATION_TESTS: "1"

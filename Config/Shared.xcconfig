@@ -1,0 +1,3 @@
+// Shared signing configuration. Local.xcconfig is intentionally optional and
+// ignored by Git so every developer can use their own Apple Developer team.
+#include? "Local.xcconfig"
