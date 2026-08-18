@@ -18,7 +18,15 @@ struct UsageTimelineProvider: TimelineProvider {
                 usedPercent: 38,
                 windowDurationMinutes: 10_080,
                 resetsAt: Date().addingTimeInterval(2 * 24 * 60 * 60),
-                fetchedAt: Date()
+                fetchedAt: Date(),
+                dailyUsage: DailyUsageState(
+                    dayStartedAt: Calendar.autoupdatingCurrent.startOfDay(for: Date()),
+                    segmentInitialRemainingPercent: 80,
+                    accumulatedBeforeSegmentPercent: 0,
+                    usedPercent: 18,
+                    lastRemainingPercent: 62,
+                    lastResetsAt: Date().addingTimeInterval(2 * 24 * 60 * 60)
+                )
             )
         )
     }
@@ -40,32 +48,31 @@ struct CodexUsageWidgetView: View {
     let entry: UsageEntry
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 0) {
             ZStack {
-                Circle()
-                    .stroke(.primary.opacity(0.12), lineWidth: 11)
+                UsageRing(progress: remainingProgress, color: outerRingColor)
+                    .frame(width: 96, height: 96)
 
-                if let percent = entry.snapshot?.remainingPercent,
-                   entry.snapshot?.kind == .percentage {
-                    Circle()
-                        .trim(from: 0, to: CGFloat(percent) / 100)
-                        .stroke(
-                            gaugeColor(percent),
-                            style: StrokeStyle(lineWidth: 11, lineCap: .round)
-                        )
-                        .rotationEffect(.degrees(-90))
-                }
+                UsageRing(progress: todayProgress, color: innerRingColor)
+                    .frame(width: 78, height: 78)
 
                 VStack(spacing: 0) {
-                    Text(remainingText)
-                        .font(.system(size: 26, weight: .semibold, design: .rounded))
+                    Text(todayText)
+                        .font(.system(size: 24, weight: .semibold, design: .rounded))
                         .minimumScaleFactor(0.7)
-                    Text("Remaining")
+                    Text("Today")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(width: 88, height: 88)
+            .frame(width: 98, height: 98)
+            .padding(.bottom, 6)
+
+            Text("\(remainingText) Remaining")
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .padding(.bottom, 2)
 
             if entry.snapshot?.isStale == true {
                 Label("Needs Update", systemImage: "exclamationmark.triangle.fill")
@@ -89,6 +96,41 @@ struct CodexUsageWidgetView: View {
         .containerBackground(for: .widget) {
             Color.clear
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Codex Usage")
+        .accessibilityValue("\(todayText) used today, \(remainingText) remaining")
+    }
+
+    private var outerRingColor: Color {
+        Color(red: 0.19, green: 0.78, blue: 0.35)
+    }
+
+    private var innerRingColor: Color {
+        Color(red: 0.47, green: 0.82, blue: 0.52)
+    }
+
+    private var remainingProgress: Double? {
+        guard entry.snapshot?.kind == .percentage,
+              let percent = entry.snapshot?.remainingPercent else {
+            return nil
+        }
+        return min(max(Double(percent) / 100, 0), 1)
+    }
+
+    private var todayUsage: Double? {
+        guard let usage = entry.snapshot?.dailyUsage,
+              usage.isCurrentDay(at: entry.date) else {
+            return nil
+        }
+        return max(usage.usedPercent, 0)
+    }
+
+    private var todayProgress: Double? {
+        todayUsage.map { min($0 / 100, 1) }
+    }
+
+    private var todayText: String {
+        todayUsage.map { "\(Int($0.rounded()))%" } ?? "--%"
     }
 
     private var remainingText: String {
@@ -103,22 +145,33 @@ struct CodexUsageWidgetView: View {
         }
     }
 
-    private func gaugeColor(_ percent: Int) -> Color {
-        switch percent {
-        case ..<20:
-            return .red
-        case ..<50:
-            return .orange
-        default:
-            return .green
-        }
-    }
-
     private func resetText(for date: Date) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.locale = Locale(identifier: "en_US")
         formatter.unitsStyle = .full
         return "Resets \(formatter.localizedString(for: date, relativeTo: entry.date))"
+    }
+}
+
+private struct UsageRing: View {
+    let progress: Double?
+    let color: Color
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(.primary.opacity(0.1), lineWidth: 8)
+
+            if let progress {
+                Circle()
+                    .trim(from: 0, to: CGFloat(progress))
+                    .stroke(
+                        color,
+                        style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(-90))
+            }
+        }
     }
 }
 
@@ -132,7 +185,7 @@ struct CodexUsageWidget: Widget {
                 .environment(\.locale, Locale(identifier: "en_US"))
         }
         .configurationDisplayName("Codex Usage")
-        .description("Shows the remaining Codex usage for the primary limit.")
+        .description("Shows today's Codex usage and the remaining primary limit.")
         .supportedFamilies([.systemSmall])
     }
 }

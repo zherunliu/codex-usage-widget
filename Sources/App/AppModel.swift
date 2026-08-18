@@ -102,7 +102,12 @@ final class AppModel: ObservableObject {
                 method: "account/rateLimits/read",
                 as: RateLimitsReadResult.self
             )
-            let newSnapshot = try UsageSnapshotBuilder.build(from: result)
+            let fetchedSnapshot = try UsageSnapshotBuilder.build(from: result)
+            let dailyUsage = DailyUsageTracker.update(
+                previous: snapshot?.dailyUsage,
+                with: fetchedSnapshot
+            )
+            let newSnapshot = fetchedSnapshot.withDailyUsage(dailyUsage)
             try store.save(newSnapshot)
             snapshot = newSnapshot
             state = .ready

@@ -16,6 +16,27 @@ struct UsageSnapshot: Codable, Equatable {
     let windowDurationMinutes: Int?
     let resetsAt: Date?
     let fetchedAt: Date
+    let dailyUsage: DailyUsageState?
+
+    init(
+        schemaVersion: Int,
+        kind: UsageKind,
+        remainingPercent: Int?,
+        usedPercent: Double?,
+        windowDurationMinutes: Int?,
+        resetsAt: Date?,
+        fetchedAt: Date,
+        dailyUsage: DailyUsageState? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.kind = kind
+        self.remainingPercent = remainingPercent
+        self.usedPercent = usedPercent
+        self.windowDurationMinutes = windowDurationMinutes
+        self.resetsAt = resetsAt
+        self.fetchedAt = fetchedAt
+        self.dailyUsage = dailyUsage
+    }
 
     var isStale: Bool {
         Date().timeIntervalSince(fetchedAt) > 30 * 60
@@ -31,6 +52,111 @@ struct UsageSnapshot: Codable, Equatable {
             resetsAt: nil,
             fetchedAt: date
         )
+    }
+
+    func withDailyUsage(_ dailyUsage: DailyUsageState?) -> UsageSnapshot {
+        UsageSnapshot(
+            schemaVersion: schemaVersion,
+            kind: kind,
+            remainingPercent: remainingPercent,
+            usedPercent: usedPercent,
+            windowDurationMinutes: windowDurationMinutes,
+            resetsAt: resetsAt,
+            fetchedAt: fetchedAt,
+            dailyUsage: dailyUsage
+        )
+    }
+}
+
+struct DailyUsageState: Codable, Equatable {
+    let dayStartedAt: Date
+    let segmentInitialRemainingPercent: Double
+    let accumulatedBeforeSegmentPercent: Double
+    let usedPercent: Double
+    let lastRemainingPercent: Double
+    let lastResetsAt: Date?
+
+    func isCurrentDay(at date: Date, calendar: Calendar = .autoupdatingCurrent) -> Bool {
+        calendar.isDate(dayStartedAt, inSameDayAs: date)
+    }
+}
+
+enum DailyUsageTracker {
+    static func update(
+        previous: DailyUsageState?,
+        with snapshot: UsageSnapshot,
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> DailyUsageState? {
+        guard snapshot.kind == .percentage,
+              let remainingPercent = snapshot.remainingPercent else {
+            guard let previous,
+                  previous.isCurrentDay(at: snapshot.fetchedAt, calendar: calendar) else {
+                return nil
+            }
+            return previous
+        }
+
+        let remaining = min(max(Double(remainingPercent), 0), 100)
+        let dayStartedAt = calendar.startOfDay(for: snapshot.fetchedAt)
+
+        guard let previous,
+              previous.isCurrentDay(at: snapshot.fetchedAt, calendar: calendar) else {
+            return DailyUsageState(
+                dayStartedAt: dayStartedAt,
+                segmentInitialRemainingPercent: remaining,
+                accumulatedBeforeSegmentPercent: 0,
+                usedPercent: 0,
+                lastRemainingPercent: remaining,
+                lastResetsAt: snapshot.resetsAt
+            )
+        }
+
+        if didReset(previous: previous, snapshot: snapshot, remaining: remaining) {
+            return DailyUsageState(
+                dayStartedAt: previous.dayStartedAt,
+                segmentInitialRemainingPercent: remaining,
+                accumulatedBeforeSegmentPercent: previous.usedPercent,
+                usedPercent: previous.usedPercent,
+                lastRemainingPercent: remaining,
+                lastResetsAt: snapshot.resetsAt ?? previous.lastResetsAt
+            )
+        }
+
+        let segmentUsed = max(previous.segmentInitialRemainingPercent - remaining, 0)
+        let candidate = previous.accumulatedBeforeSegmentPercent + segmentUsed
+        let used = max(previous.usedPercent, candidate)
+
+        return DailyUsageState(
+            dayStartedAt: previous.dayStartedAt,
+            segmentInitialRemainingPercent: previous.segmentInitialRemainingPercent,
+            accumulatedBeforeSegmentPercent: previous.accumulatedBeforeSegmentPercent,
+            usedPercent: used,
+            lastRemainingPercent: remaining,
+            lastResetsAt: snapshot.resetsAt ?? previous.lastResetsAt
+        )
+    }
+
+    private static func didReset(
+        previous: DailyUsageState,
+        snapshot: UsageSnapshot,
+        remaining: Double
+    ) -> Bool {
+        if let previousReset = previous.lastResetsAt,
+           let currentReset = snapshot.resetsAt,
+           currentReset.timeIntervalSince(previousReset) > 1 {
+            return true
+        }
+
+        let remainingIncreased = remaining > previous.lastRemainingPercent
+        if let previousReset = previous.lastResetsAt,
+           snapshot.fetchedAt >= previousReset,
+           remainingIncreased {
+            return true
+        }
+
+        return previous.lastResetsAt == nil
+            && snapshot.resetsAt == nil
+            && remainingIncreased
     }
 }
 
