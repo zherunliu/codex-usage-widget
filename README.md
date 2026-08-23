@@ -13,7 +13,8 @@ The app connects to the Codex CLI already installed on your Mac, reads the prima
 ## Features
 
 - Native macOS menu bar app built with SwiftUI
-- Small WidgetKit widget with a battery-style usage gauge
+- Small WidgetKit widget with dual rings for today's usage and the remaining limit
+- Medium WidgetKit widget with the same dual-ring summary and a seven-day usage chart
 - Remaining percentage and next reset time
 - Automatic refresh every 15 minutes and on Codex usage updates
 - Manual refresh from the menu bar
@@ -85,7 +86,8 @@ The app appears in the macOS menu bar instead of the Dock. On first launch, it t
 
 1. Right-click the macOS desktop and select **Edit Widgets**.
 2. Search for **Codex Usage**.
-3. Add the small widget to the desktop or Notification Center.
+3. Add **Codex Usage**, then choose the small dual-ring size or the medium
+   dual-ring and seven-day chart size.
 
 If macOS continues to show an older widget after rebuilding, remove the widget and add it again to refresh the WidgetKit cache.
 
