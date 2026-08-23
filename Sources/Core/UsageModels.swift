@@ -7,7 +7,7 @@ enum UsageKind: String, Codable, Equatable {
 }
 
 struct UsageSnapshot: Codable, Equatable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     let schemaVersion: Int
     let kind: UsageKind
@@ -17,6 +17,7 @@ struct UsageSnapshot: Codable, Equatable {
     let resetsAt: Date?
     let fetchedAt: Date
     let dailyUsage: DailyUsageState?
+    let dailyUsageHistory: [DailyUsageDay]?
 
     init(
         schemaVersion: Int,
@@ -26,7 +27,8 @@ struct UsageSnapshot: Codable, Equatable {
         windowDurationMinutes: Int?,
         resetsAt: Date?,
         fetchedAt: Date,
-        dailyUsage: DailyUsageState? = nil
+        dailyUsage: DailyUsageState? = nil,
+        dailyUsageHistory: [DailyUsageDay]? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.kind = kind
@@ -36,6 +38,7 @@ struct UsageSnapshot: Codable, Equatable {
         self.resetsAt = resetsAt
         self.fetchedAt = fetchedAt
         self.dailyUsage = dailyUsage
+        self.dailyUsageHistory = dailyUsageHistory
     }
 
     var isStale: Bool {
@@ -54,7 +57,10 @@ struct UsageSnapshot: Codable, Equatable {
         )
     }
 
-    func withDailyUsage(_ dailyUsage: DailyUsageState?) -> UsageSnapshot {
+    func withUsageTracking(
+        dailyUsage: DailyUsageState?,
+        dailyUsageHistory: [DailyUsageDay]
+    ) -> UsageSnapshot {
         UsageSnapshot(
             schemaVersion: schemaVersion,
             kind: kind,
@@ -63,7 +69,8 @@ struct UsageSnapshot: Codable, Equatable {
             windowDurationMinutes: windowDurationMinutes,
             resetsAt: resetsAt,
             fetchedAt: fetchedAt,
-            dailyUsage: dailyUsage
+            dailyUsage: dailyUsage,
+            dailyUsageHistory: dailyUsageHistory
         )
     }
 }
@@ -79,6 +86,11 @@ struct DailyUsageState: Codable, Equatable {
     func isCurrentDay(at date: Date, calendar: Calendar = .autoupdatingCurrent) -> Bool {
         calendar.isDate(dayStartedAt, inSameDayAs: date)
     }
+}
+
+struct DailyUsageDay: Codable, Equatable {
+    let dayStartedAt: Date
+    let usedPercent: Double?
 }
 
 enum DailyUsageTracker {
@@ -157,6 +169,71 @@ enum DailyUsageTracker {
         return previous.lastResetsAt == nil
             && snapshot.resetsAt == nil
             && remainingIncreased
+    }
+}
+
+enum DailyUsageHistoryTracker {
+    static let capacity = 7
+
+    static func update(
+        previous: [DailyUsageDay]?,
+        previousDailyUsage: DailyUsageState?,
+        currentDailyUsage: DailyUsageState?,
+        at date: Date,
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> [DailyUsageDay] {
+        let today = calendar.startOfDay(for: date)
+        let days = (-(capacity - 1)...0).map { offset in
+            day(byAdding: offset, to: today, calendar: calendar)
+        }
+        let validDays = Set(days)
+        var usageByDay: [Date: Double] = [:]
+
+        for item in previous ?? [] {
+            let day = calendar.startOfDay(for: item.dayStartedAt)
+            guard validDays.contains(day), let usedPercent = item.usedPercent else {
+                continue
+            }
+            store(usedPercent, for: day, in: &usageByDay)
+        }
+
+        store(previousDailyUsage, validDays: validDays, calendar: calendar, in: &usageByDay)
+        store(currentDailyUsage, validDays: validDays, calendar: calendar, in: &usageByDay)
+
+        return days.map { day in
+            DailyUsageDay(dayStartedAt: day, usedPercent: usageByDay[day])
+        }
+    }
+
+    private static func store(
+        _ state: DailyUsageState?,
+        validDays: Set<Date>,
+        calendar: Calendar,
+        in usageByDay: inout [Date: Double]
+    ) {
+        guard let state else { return }
+        let day = calendar.startOfDay(for: state.dayStartedAt)
+        guard validDays.contains(day) else { return }
+        store(state.usedPercent, for: day, in: &usageByDay)
+    }
+
+    private static func store(
+        _ usedPercent: Double,
+        for day: Date,
+        in usageByDay: inout [Date: Double]
+    ) {
+        let value = max(usedPercent, 0)
+        usageByDay[day] = max(usageByDay[day] ?? 0, value)
+    }
+
+    private static func day(
+        byAdding offset: Int,
+        to date: Date,
+        calendar: Calendar
+    ) -> Date {
+        let adjusted = calendar.date(byAdding: .day, value: offset, to: date)
+            ?? date.addingTimeInterval(Double(offset) * 24 * 60 * 60)
+        return calendar.startOfDay(for: adjusted)
     }
 }
 

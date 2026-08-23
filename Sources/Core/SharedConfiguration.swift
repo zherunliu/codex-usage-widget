@@ -36,7 +36,7 @@ struct UsageSnapshotStore {
             UsageSnapshot.self,
             from: Data(contentsOf: url)
         )
-        guard snapshot.schemaVersion == UsageSnapshot.currentSchemaVersion else {
+        guard (1...UsageSnapshot.currentSchemaVersion).contains(snapshot.schemaVersion) else {
             throw StoreError.incompatibleSchema
         }
         return snapshot

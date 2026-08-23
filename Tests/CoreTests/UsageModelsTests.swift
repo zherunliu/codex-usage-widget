@@ -69,7 +69,13 @@ final class UsageModelsTests: XCTestCase {
                 usedPercent: 6,
                 lastRemainingPercent: 88,
                 lastResetsAt: Date(timeIntervalSince1970: 1_000)
-            )
+            ),
+            dailyUsageHistory: (0..<DailyUsageHistoryTracker.capacity).map { index in
+                DailyUsageDay(
+                    dayStartedAt: Date(timeIntervalSince1970: Double(index * 86_400)),
+                    usedPercent: Double(index * 10)
+                )
+            }
         )
 
         try store.save(snapshot)
@@ -192,6 +198,97 @@ final class UsageModelsTests: XCTestCase {
         XCTAssertEqual(secondWindow?.usedPercent, 120)
     }
 
+    func testDailyUsageHistoryAlwaysContainsSevenDaysEndingToday() {
+        let today = date(year: 2026, month: 8, day: 21)
+        let history = DailyUsageHistoryTracker.update(
+            previous: nil,
+            previousDailyUsage: nil,
+            currentDailyUsage: dailyUsageState(dayStartedAt: today, usedPercent: 18),
+            at: today,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(history.count, 7)
+        XCTAssertEqual(history.first?.dayStartedAt, date(year: 2026, month: 8, day: 15))
+        XCTAssertEqual(history.last?.dayStartedAt, today)
+        XCTAssertTrue(history.dropLast().allSatisfy { $0.usedPercent == nil })
+        XCTAssertEqual(history.last?.usedPercent, 18)
+    }
+
+    func testDailyUsageHistoryArchivesYesterdayAfterMidnight() {
+        let yesterday = date(year: 2026, month: 8, day: 20)
+        let today = date(year: 2026, month: 8, day: 21)
+        let yesterdayUsage = dailyUsageState(dayStartedAt: yesterday, usedPercent: 27)
+        let previousHistory = DailyUsageHistoryTracker.update(
+            previous: nil,
+            previousDailyUsage: nil,
+            currentDailyUsage: yesterdayUsage,
+            at: yesterday,
+            calendar: utcCalendar
+        )
+
+        let history = DailyUsageHistoryTracker.update(
+            previous: previousHistory,
+            previousDailyUsage: yesterdayUsage,
+            currentDailyUsage: dailyUsageState(dayStartedAt: today, usedPercent: 0),
+            at: today,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(history[5].dayStartedAt, yesterday)
+        XCTAssertEqual(history[5].usedPercent, 27)
+        XCTAssertEqual(history[6].dayStartedAt, today)
+        XCTAssertEqual(history[6].usedPercent, 0)
+    }
+
+    func testDailyUsageHistoryKeepsMissedDaysUnknown() {
+        let lastObservedDay = date(year: 2026, month: 8, day: 18)
+        let today = date(year: 2026, month: 8, day: 21)
+        let history = DailyUsageHistoryTracker.update(
+            previous: nil,
+            previousDailyUsage: dailyUsageState(
+                dayStartedAt: lastObservedDay,
+                usedPercent: 36
+            ),
+            currentDailyUsage: dailyUsageState(dayStartedAt: today, usedPercent: 0),
+            at: today,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(history[3].dayStartedAt, lastObservedDay)
+        XCTAssertEqual(history[3].usedPercent, 36)
+        XCTAssertNil(history[4].usedPercent)
+        XCTAssertNil(history[5].usedPercent)
+        XCTAssertEqual(history[6].usedPercent, 0)
+    }
+
+    func testDailyUsageHistoryDropsOldDaysAndPreservesValuesAboveOneHundred() {
+        let today = date(year: 2026, month: 8, day: 21)
+        let previous = [
+            DailyUsageDay(
+                dayStartedAt: date(year: 2026, month: 8, day: 14),
+                usedPercent: 99
+            ),
+            DailyUsageDay(
+                dayStartedAt: date(year: 2026, month: 8, day: 20),
+                usedPercent: 120
+            )
+        ]
+
+        let history = DailyUsageHistoryTracker.update(
+            previous: previous,
+            previousDailyUsage: nil,
+            currentDailyUsage: dailyUsageState(dayStartedAt: today, usedPercent: 4),
+            at: today,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(history.count, 7)
+        XCTAssertFalse(history.contains { $0.dayStartedAt == previous[0].dayStartedAt })
+        XCTAssertEqual(history[5].usedPercent, 120)
+        XCTAssertEqual(history[6].usedPercent, 4)
+    }
+
     func testSnapshotStoreLoadsLegacySnapshotWithoutDailyUsage() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -211,6 +308,27 @@ final class UsageModelsTests: XCTestCase {
 
         XCTAssertEqual(snapshot?.remainingPercent, 88)
         XCTAssertNil(snapshot?.dailyUsage)
+        XCTAssertNil(snapshot?.dailyUsageHistory)
+    }
+
+    private func dailyUsageState(
+        dayStartedAt: Date,
+        usedPercent: Double
+    ) -> DailyUsageState {
+        DailyUsageState(
+            dayStartedAt: dayStartedAt,
+            segmentInitialRemainingPercent: 100,
+            accumulatedBeforeSegmentPercent: 0,
+            usedPercent: usedPercent,
+            lastRemainingPercent: max(100 - usedPercent, 0),
+            lastResetsAt: nil
+        )
+    }
+
+    private func date(year: Int, month: Int, day: Int) -> Date {
+        utcCalendar.date(
+            from: DateComponents(year: year, month: month, day: day)
+        )!
     }
 
     private func percentageSnapshot(
