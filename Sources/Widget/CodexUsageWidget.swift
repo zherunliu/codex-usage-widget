@@ -118,6 +118,7 @@ struct CodexUsageHistoryWidgetView: View {
                 ForEach(Array(historyDays.enumerated()), id: \.offset) { _, day in
                     UsageHistoryBar(
                         day: day,
+                        maximumUsage: historyMaximumUsage,
                         isToday: Calendar.autoupdatingCurrent.isDate(
                             day.dayStartedAt,
                             inSameDayAs: entry.date
@@ -161,6 +162,13 @@ struct CodexUsageHistoryWidgetView: View {
             currentDailyUsage: entry.snapshot?.dailyUsage,
             at: entry.date
         )
+    }
+
+    private var historyMaximumUsage: Double {
+        historyDays
+            .compactMap(\.usedPercent)
+            .map { max($0, 0) }
+            .max() ?? 0
     }
 
     private var outerRingColor: Color {
@@ -235,6 +243,7 @@ struct CodexUsageHistoryWidgetView: View {
 
 private struct UsageHistoryBar: View {
     let day: DailyUsageDay
+    let maximumUsage: Double
     let isToday: Bool
 
     var body: some View {
@@ -278,7 +287,8 @@ private struct UsageHistoryBar: View {
     }
 
     private func barHeight(for usedPercent: Double, available: CGFloat) -> CGFloat {
-        let progress = min(max(usedPercent / 100, 0), 1)
+        guard maximumUsage > 0 else { return 0 }
+        let progress = min(max(usedPercent / maximumUsage, 0), 1)
         guard progress > 0 else { return 0 }
         return max(3, available * progress)
     }
