@@ -103,7 +103,7 @@ final class UsageModelsTests: XCTestCase {
         XCTAssertEqual(updated?.usedPercent, 14)
     }
 
-    func testDailyUsageKeepsAccumulatedValueAcrossLimitReset() {
+    func testDailyUsageCountsConsumptionAlreadySeenAfterLimitReset() {
         let initial = DailyUsageTracker.update(
             previous: nil,
             with: percentageSnapshot(remaining: 94, fetchedAt: 1_000, resetsAt: 5_000),
@@ -126,11 +126,60 @@ final class UsageModelsTests: XCTestCase {
         )
 
         XCTAssertEqual(beforeReset?.usedPercent, 14)
-        XCTAssertEqual(afterReset?.usedPercent, 14)
-        XCTAssertEqual(afterMoreUsage?.usedPercent, 20)
+        XCTAssertEqual(afterReset?.segmentInitialRemainingPercent, 100)
+        XCTAssertEqual(afterReset?.usedPercent, 15)
+        XCTAssertEqual(afterMoreUsage?.usedPercent, 21)
     }
 
-    func testDailyUsageRestartsOnNextLocalDay() {
+    func testDailyUsageRepairsMissedConsumptionWhenWindowResetEarlierToday() {
+        let dayStartedAt = date(year: 2026, month: 8, day: 26)
+        let windowStartedAt = dayStartedAt.addingTimeInterval(2 * 60 * 60)
+        let resetsAt = windowStartedAt.addingTimeInterval(7 * 24 * 60 * 60)
+        let previous = DailyUsageState(
+            dayStartedAt: dayStartedAt,
+            segmentInitialRemainingPercent: 99,
+            accumulatedBeforeSegmentPercent: 0,
+            usedPercent: 0,
+            lastRemainingPercent: 99,
+            lastResetsAt: resetsAt
+        )
+        let snapshot = percentageSnapshot(
+            remaining: 99,
+            fetchedAt: dayStartedAt.addingTimeInterval(3 * 60 * 60).timeIntervalSince1970,
+            resetsAt: resetsAt.timeIntervalSince1970
+        )
+
+        let repaired = DailyUsageTracker.update(
+            previous: previous,
+            with: snapshot,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(repaired?.segmentInitialRemainingPercent, 100)
+        XCTAssertEqual(repaired?.usedPercent, 1)
+    }
+
+    func testDailyUsageInfersConsumptionOnFirstFetchWhenWindowResetEarlierToday() {
+        let dayStartedAt = date(year: 2026, month: 8, day: 26)
+        let windowStartedAt = dayStartedAt.addingTimeInterval(2 * 60 * 60)
+        let resetsAt = windowStartedAt.addingTimeInterval(7 * 24 * 60 * 60)
+        let snapshot = percentageSnapshot(
+            remaining: 99,
+            fetchedAt: dayStartedAt.addingTimeInterval(3 * 60 * 60).timeIntervalSince1970,
+            resetsAt: resetsAt.timeIntervalSince1970
+        )
+
+        let initial = DailyUsageTracker.update(
+            previous: nil,
+            with: snapshot,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(initial?.segmentInitialRemainingPercent, 100)
+        XCTAssertEqual(initial?.usedPercent, 1)
+    }
+
+    func testDailyUsageAttributesObservedCrossMidnightDecreaseToNewDay() {
         let initial = DailyUsageTracker.update(
             previous: nil,
             with: percentageSnapshot(remaining: 90, fetchedAt: 1_000, resetsAt: 100_000),
@@ -148,8 +197,24 @@ final class UsageModelsTests: XCTestCase {
         )
 
         XCTAssertEqual(sameDay?.usedPercent, 15)
-        XCTAssertEqual(nextDay?.usedPercent, 0)
-        XCTAssertEqual(nextDay?.segmentInitialRemainingPercent, 70)
+        XCTAssertEqual(nextDay?.usedPercent, 5)
+        XCTAssertEqual(nextDay?.segmentInitialRemainingPercent, 75)
+    }
+
+    func testDailyUsageDoesNotCreateUsageForCrossMidnightIncreaseWithoutReset() {
+        let initial = DailyUsageTracker.update(
+            previous: nil,
+            with: percentageSnapshot(remaining: 70, fetchedAt: 1_000, resetsAt: 100_000),
+            calendar: utcCalendar
+        )
+        let correctedNextDay = DailyUsageTracker.update(
+            previous: initial,
+            with: percentageSnapshot(remaining: 72, fetchedAt: 90_000, resetsAt: 100_000),
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(correctedNextDay?.usedPercent, 0)
+        XCTAssertEqual(correctedNextDay?.segmentInitialRemainingPercent, 72)
     }
 
     func testDailyUsageNeverMovesBackwardWhenRemainingIncreases() {

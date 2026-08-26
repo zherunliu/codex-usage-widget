@@ -113,38 +113,81 @@ enum DailyUsageTracker {
 
         guard let previous,
               previous.isCurrentDay(at: snapshot.fetchedAt, calendar: calendar) else {
-            return DailyUsageState(
+            return startDay(
+                previous: previous,
+                snapshot: snapshot,
+                remaining: remaining,
                 dayStartedAt: dayStartedAt,
-                segmentInitialRemainingPercent: remaining,
-                accumulatedBeforeSegmentPercent: 0,
-                usedPercent: 0,
-                lastRemainingPercent: remaining,
-                lastResetsAt: snapshot.resetsAt
+                calendar: calendar
             )
         }
 
         if didReset(previous: previous, snapshot: snapshot, remaining: remaining) {
+            let usedSinceReset = max(100 - remaining, 0)
+            let accumulated = previous.usedPercent
+
             return DailyUsageState(
                 dayStartedAt: previous.dayStartedAt,
-                segmentInitialRemainingPercent: remaining,
-                accumulatedBeforeSegmentPercent: previous.usedPercent,
-                usedPercent: previous.usedPercent,
+                segmentInitialRemainingPercent: 100,
+                accumulatedBeforeSegmentPercent: accumulated,
+                usedPercent: accumulated + usedSinceReset,
                 lastRemainingPercent: remaining,
                 lastResetsAt: snapshot.resetsAt ?? previous.lastResetsAt
             )
         }
 
-        let segmentUsed = max(previous.segmentInitialRemainingPercent - remaining, 0)
+        let segmentInitialRemaining = windowStartedToday(
+            snapshot: snapshot,
+            calendar: calendar
+        ) ? 100 : previous.segmentInitialRemainingPercent
+        let segmentUsed = max(segmentInitialRemaining - remaining, 0)
         let candidate = previous.accumulatedBeforeSegmentPercent + segmentUsed
         let used = max(previous.usedPercent, candidate)
 
         return DailyUsageState(
             dayStartedAt: previous.dayStartedAt,
-            segmentInitialRemainingPercent: previous.segmentInitialRemainingPercent,
+            segmentInitialRemainingPercent: segmentInitialRemaining,
             accumulatedBeforeSegmentPercent: previous.accumulatedBeforeSegmentPercent,
             usedPercent: used,
             lastRemainingPercent: remaining,
             lastResetsAt: snapshot.resetsAt ?? previous.lastResetsAt
+        )
+    }
+
+    private static func startDay(
+        previous: DailyUsageState?,
+        snapshot: UsageSnapshot,
+        remaining: Double,
+        dayStartedAt: Date,
+        calendar: Calendar
+    ) -> DailyUsageState {
+        let resetBetweenObservations = previous.map {
+            didReset(previous: $0, snapshot: snapshot, remaining: remaining)
+        } ?? false
+        let startedFromFullAllowance = windowStartedToday(
+            snapshot: snapshot,
+            calendar: calendar
+        ) || resetBetweenObservations
+
+        let initialRemaining: Double
+        if startedFromFullAllowance {
+            initialRemaining = 100
+        } else if let previous {
+            // Attribute an observable cross-midnight decrease to the new day.
+            // If remaining increased without a detected reset, start at the
+            // corrected value instead of creating usage that was not observed.
+            initialRemaining = max(previous.lastRemainingPercent, remaining)
+        } else {
+            initialRemaining = remaining
+        }
+
+        return DailyUsageState(
+            dayStartedAt: dayStartedAt,
+            segmentInitialRemainingPercent: initialRemaining,
+            accumulatedBeforeSegmentPercent: 0,
+            usedPercent: max(initialRemaining - remaining, 0),
+            lastRemainingPercent: remaining,
+            lastResetsAt: snapshot.resetsAt
         )
     }
 
@@ -169,6 +212,22 @@ enum DailyUsageTracker {
         return previous.lastResetsAt == nil
             && snapshot.resetsAt == nil
             && remainingIncreased
+    }
+
+    private static func windowStartedToday(
+        snapshot: UsageSnapshot,
+        calendar: Calendar
+    ) -> Bool {
+        guard let resetsAt = snapshot.resetsAt,
+              let durationMinutes = snapshot.windowDurationMinutes,
+              durationMinutes > 0 else {
+            return false
+        }
+
+        let windowStartedAt = resetsAt.addingTimeInterval(
+            -Double(durationMinutes) * 60
+        )
+        return calendar.isDate(windowStartedAt, inSameDayAs: snapshot.fetchedAt)
     }
 }
 
