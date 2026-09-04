@@ -94,6 +94,8 @@ struct DailyUsageDay: Codable, Equatable {
 }
 
 enum DailyUsageTracker {
+    private static let resetTimeJitterTolerance: TimeInterval = 60
+
     static func update(
         previous: DailyUsageState?,
         with snapshot: UsageSnapshot,
@@ -167,11 +169,16 @@ enum DailyUsageTracker {
         let startedFromFullAllowance = windowStartedToday(
             snapshot: snapshot,
             calendar: calendar
-        ) || resetBetweenObservations
+        )
 
         let initialRemaining: Double
         if startedFromFullAllowance {
             initialRemaining = 100
+        } else if resetBetweenObservations {
+            // The reset happened before today, so the current cycle's usage
+            // cannot be split across local days. Start today at the first
+            // observation instead of assigning the whole cycle to today.
+            initialRemaining = remaining
         } else if let previous {
             // Attribute an observable cross-midnight decrease to the new day.
             // If remaining increased without a detected reset, start at the
@@ -198,7 +205,7 @@ enum DailyUsageTracker {
     ) -> Bool {
         if let previousReset = previous.lastResetsAt,
            let currentReset = snapshot.resetsAt,
-           currentReset.timeIntervalSince(previousReset) > 1 {
+           currentReset.timeIntervalSince(previousReset) > resetTimeJitterTolerance {
             return true
         }
 
@@ -228,6 +235,107 @@ enum DailyUsageTracker {
             -Double(durationMinutes) * 60
         )
         return calendar.isDate(windowStartedAt, inSameDayAs: snapshot.fetchedAt)
+    }
+}
+
+struct DailyUsageTrackingSeed {
+    let dailyUsage: DailyUsageState?
+    let dailyUsageHistory: [DailyUsageDay]?
+}
+
+enum DailyUsageTrackingRepair {
+    static func prepare(
+        previous snapshot: UsageSnapshot?,
+        at date: Date,
+        calendar: Calendar = .autoupdatingCurrent
+    ) -> DailyUsageTrackingSeed {
+        guard let snapshot else {
+            return DailyUsageTrackingSeed(dailyUsage: nil, dailyUsageHistory: nil)
+        }
+        // Repair only recognized tracking states before applying the new sample.
+        guard let repairedDailyUsage = repairedDailyUsage(
+            snapshot: snapshot,
+            at: date,
+            calendar: calendar
+        ) else {
+            return DailyUsageTrackingSeed(
+                dailyUsage: snapshot.dailyUsage,
+                dailyUsageHistory: snapshot.dailyUsageHistory
+            )
+        }
+
+        let completedHistory = DailyUsageHistoryTracker.update(
+            previous: snapshot.dailyUsageHistory,
+            previousDailyUsage: snapshot.dailyUsage,
+            currentDailyUsage: nil,
+            at: date,
+            calendar: calendar
+        ).filter {
+            !calendar.isDate($0.dayStartedAt, inSameDayAs: date)
+        }
+
+        return DailyUsageTrackingSeed(
+            dailyUsage: repairedDailyUsage,
+            dailyUsageHistory: completedHistory
+        )
+    }
+
+    private static func repairedDailyUsage(
+        snapshot: UsageSnapshot,
+        at date: Date,
+        calendar: Calendar
+    ) -> DailyUsageState? {
+        guard let dailyUsage = snapshot.dailyUsage,
+              dailyUsage.isCurrentDay(at: date, calendar: calendar),
+              dailyUsage.segmentInitialRemainingPercent == 100,
+              let resetsAt = snapshot.resetsAt,
+              let durationMinutes = snapshot.windowDurationMinutes,
+              durationMinutes > 0 else {
+            return nil
+        }
+
+        let today = calendar.startOfDay(for: date)
+        let windowStartedAt = resetsAt.addingTimeInterval(-Double(durationMinutes) * 60)
+        guard windowStartedAt < today else {
+            return nil
+        }
+
+        let usedSinceFullAllowance = max(100 - dailyUsage.lastRemainingPercent, 0)
+        let accumulated = dailyUsage.accumulatedBeforeSegmentPercent
+        if accumulated > 0,
+           abs(dailyUsage.usedPercent - (accumulated + usedSinceFullAllowance)) < 0.001 {
+            // A reset-time jitter created a false 100% segment. Preserve the
+            // usage accumulated before it and continue from the latest sample.
+            return DailyUsageState(
+                dayStartedAt: dailyUsage.dayStartedAt,
+                segmentInitialRemainingPercent: dailyUsage.lastRemainingPercent,
+                accumulatedBeforeSegmentPercent: accumulated,
+                usedPercent: accumulated,
+                lastRemainingPercent: dailyUsage.lastRemainingPercent,
+                lastResetsAt: dailyUsage.lastResetsAt
+            )
+        }
+
+        guard accumulated == 0,
+              abs(dailyUsage.usedPercent - usedSinceFullAllowance) < 0.001,
+              let yesterday = calendar.date(byAdding: .day, value: -1, to: today),
+              let yesterdayUsage = snapshot.dailyUsageHistory?.first(where: {
+                  calendar.isDate($0.dayStartedAt, inSameDayAs: yesterday)
+              })?.usedPercent,
+              yesterdayUsage > 0,
+              yesterdayUsage <= dailyUsage.usedPercent else {
+            return nil
+        }
+
+        let repairedUsedPercent = dailyUsage.usedPercent - yesterdayUsage
+        return DailyUsageState(
+            dayStartedAt: dailyUsage.dayStartedAt,
+            segmentInitialRemainingPercent: dailyUsage.lastRemainingPercent + repairedUsedPercent,
+            accumulatedBeforeSegmentPercent: 0,
+            usedPercent: repairedUsedPercent,
+            lastRemainingPercent: dailyUsage.lastRemainingPercent,
+            lastResetsAt: dailyUsage.lastResetsAt
+        )
     }
 }
 

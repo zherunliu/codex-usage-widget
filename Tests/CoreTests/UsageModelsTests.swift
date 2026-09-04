@@ -131,6 +131,41 @@ final class UsageModelsTests: XCTestCase {
         XCTAssertEqual(afterMoreUsage?.usedPercent, 21)
     }
 
+    func testDailyUsageIgnoresResetTimeJitter() {
+        let today = date(year: 2026, month: 9, day: 4)
+        let resetsAt = date(year: 2026, month: 9, day: 7)
+        let previous = DailyUsageState(
+            dayStartedAt: today,
+            segmentInitialRemainingPercent: 31,
+            accumulatedBeforeSegmentPercent: 0,
+            usedPercent: 3,
+            lastRemainingPercent: 28,
+            lastResetsAt: resetsAt
+        )
+        let earlierJitter = DailyUsageTracker.update(
+            previous: previous,
+            with: percentageSnapshot(
+                remaining: 28,
+                fetchedAt: today.addingTimeInterval(10 * 60 * 60).timeIntervalSince1970,
+                resetsAt: resetsAt.addingTimeInterval(-1).timeIntervalSince1970
+            ),
+            calendar: utcCalendar
+        )
+        let laterJitter = DailyUsageTracker.update(
+            previous: earlierJitter,
+            with: percentageSnapshot(
+                remaining: 27,
+                fetchedAt: today.addingTimeInterval(10 * 60 * 60 + 15 * 60).timeIntervalSince1970,
+                resetsAt: resetsAt.addingTimeInterval(1).timeIntervalSince1970
+            ),
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(laterJitter?.segmentInitialRemainingPercent, 31)
+        XCTAssertEqual(laterJitter?.accumulatedBeforeSegmentPercent, 0)
+        XCTAssertEqual(laterJitter?.usedPercent, 4)
+    }
+
     func testDailyUsageRepairsMissedConsumptionWhenWindowResetEarlierToday() {
         let dayStartedAt = date(year: 2026, month: 8, day: 26)
         let windowStartedAt = dayStartedAt.addingTimeInterval(2 * 60 * 60)
@@ -215,6 +250,258 @@ final class UsageModelsTests: XCTestCase {
 
         XCTAssertEqual(correctedNextDay?.usedPercent, 0)
         XCTAssertEqual(correctedNextDay?.segmentInitialRemainingPercent, 72)
+    }
+
+    func testDailyUsageStartsAtFirstObservationWhenLimitResetOnPreviousDay() {
+        let yesterday = date(year: 2026, month: 8, day: 26)
+        let today = date(year: 2026, month: 8, day: 27)
+        let resetOnYesterday = yesterday.addingTimeInterval(10 * 60 * 60)
+        let nextReset = resetOnYesterday.addingTimeInterval(7 * 24 * 60 * 60)
+        let previous = DailyUsageState(
+            dayStartedAt: yesterday,
+            segmentInitialRemainingPercent: 58,
+            accumulatedBeforeSegmentPercent: 0,
+            usedPercent: 18,
+            lastRemainingPercent: 40,
+            lastResetsAt: resetOnYesterday
+        )
+        let firstObservationToday = percentageSnapshot(
+            remaining: 82,
+            fetchedAt: today.addingTimeInterval(18 * 60 * 60).timeIntervalSince1970,
+            resetsAt: nextReset.timeIntervalSince1970
+        )
+
+        let updated = DailyUsageTracker.update(
+            previous: previous,
+            with: firstObservationToday,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(updated?.dayStartedAt, today)
+        XCTAssertEqual(updated?.segmentInitialRemainingPercent, 82)
+        XCTAssertEqual(updated?.usedPercent, 0)
+    }
+
+    func testDailyUsageRepairClearsDuplicatedTodayAndPreservesYesterday() {
+        let yesterday = date(year: 2026, month: 8, day: 26)
+        let today = date(year: 2026, month: 8, day: 27)
+        let legacySnapshot = UsageSnapshot(
+            schemaVersion: 2,
+            kind: .percentage,
+            remainingPercent: 82,
+            usedPercent: 18,
+            windowDurationMinutes: 10_080,
+            resetsAt: date(year: 2026, month: 9, day: 2),
+            fetchedAt: today.addingTimeInterval(18 * 60 * 60),
+            dailyUsage: dailyUsageState(dayStartedAt: today, usedPercent: 18),
+            dailyUsageHistory: [
+                DailyUsageDay(dayStartedAt: yesterday, usedPercent: 18),
+                DailyUsageDay(dayStartedAt: today, usedPercent: 18)
+            ]
+        )
+
+        let seed = DailyUsageTrackingRepair.prepare(
+            previous: legacySnapshot,
+            at: legacySnapshot.fetchedAt,
+            calendar: utcCalendar
+        )
+        let current = DailyUsageTracker.update(
+            previous: seed.dailyUsage,
+            with: legacySnapshot,
+            calendar: utcCalendar
+        )
+        let history = DailyUsageHistoryTracker.update(
+            previous: seed.dailyUsageHistory,
+            previousDailyUsage: seed.dailyUsage,
+            currentDailyUsage: current,
+            at: legacySnapshot.fetchedAt,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(seed.dailyUsage?.usedPercent, 0)
+        XCTAssertEqual(current?.usedPercent, 0)
+        XCTAssertEqual(history[5].dayStartedAt, yesterday)
+        XCTAssertEqual(history[5].usedPercent, 18)
+        XCTAssertEqual(history[6].dayStartedAt, today)
+        XCTAssertEqual(history[6].usedPercent, 0)
+    }
+
+    func testDailyUsageRepairSubtractsDuplicatedYesterdayFromCurrentTotal() {
+        let yesterday = date(year: 2026, month: 8, day: 26)
+        let today = date(year: 2026, month: 8, day: 27)
+        let resetsAt = date(year: 2026, month: 9, day: 2)
+        let duplicatedSnapshot = UsageSnapshot(
+            schemaVersion: 2,
+            kind: .percentage,
+            remainingPercent: 80,
+            usedPercent: 20,
+            windowDurationMinutes: 10_080,
+            resetsAt: resetsAt,
+            fetchedAt: today.addingTimeInterval(18 * 60 * 60),
+            dailyUsage: DailyUsageState(
+                dayStartedAt: today,
+                segmentInitialRemainingPercent: 100,
+                accumulatedBeforeSegmentPercent: 0,
+                usedPercent: 20,
+                lastRemainingPercent: 80,
+                lastResetsAt: resetsAt
+            ),
+            dailyUsageHistory: [
+                DailyUsageDay(dayStartedAt: yesterday, usedPercent: 18),
+                DailyUsageDay(dayStartedAt: today, usedPercent: 20)
+            ]
+        )
+
+        let seed = DailyUsageTrackingRepair.prepare(
+            previous: duplicatedSnapshot,
+            at: duplicatedSnapshot.fetchedAt,
+            calendar: utcCalendar
+        )
+        let current = DailyUsageTracker.update(
+            previous: seed.dailyUsage,
+            with: duplicatedSnapshot,
+            calendar: utcCalendar
+        )
+        let history = DailyUsageHistoryTracker.update(
+            previous: seed.dailyUsageHistory,
+            previousDailyUsage: seed.dailyUsage,
+            currentDailyUsage: current,
+            at: duplicatedSnapshot.fetchedAt,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(seed.dailyUsage?.segmentInitialRemainingPercent, 82)
+        XCTAssertEqual(seed.dailyUsage?.usedPercent, 2)
+        XCTAssertEqual(current?.usedPercent, 2)
+        XCTAssertEqual(history[5].usedPercent, 18)
+        XCTAssertEqual(history[6].usedPercent, 2)
+    }
+
+    func testDailyUsageRepairPreservesAlreadyCorrectedToday() {
+        let yesterday = date(year: 2026, month: 8, day: 26)
+        let today = date(year: 2026, month: 8, day: 27)
+        let correctedToday = DailyUsageState(
+            dayStartedAt: today,
+            segmentInitialRemainingPercent: 82,
+            accumulatedBeforeSegmentPercent: 0,
+            usedPercent: 2,
+            lastRemainingPercent: 80,
+            lastResetsAt: date(year: 2026, month: 9, day: 2)
+        )
+        let snapshot = UsageSnapshot(
+            schemaVersion: 2,
+            kind: .percentage,
+            remainingPercent: 80,
+            usedPercent: 20,
+            windowDurationMinutes: 10_080,
+            resetsAt: date(year: 2026, month: 9, day: 2),
+            fetchedAt: today.addingTimeInterval(18 * 60 * 60),
+            dailyUsage: correctedToday,
+            dailyUsageHistory: [
+                DailyUsageDay(dayStartedAt: yesterday, usedPercent: 18),
+                DailyUsageDay(dayStartedAt: today, usedPercent: 2)
+            ]
+        )
+
+        let seed = DailyUsageTrackingRepair.prepare(
+            previous: snapshot,
+            at: snapshot.fetchedAt,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(seed.dailyUsage, correctedToday)
+        XCTAssertEqual(seed.dailyUsageHistory, snapshot.dailyUsageHistory)
+    }
+
+    func testDailyUsageRepairRemovesJitterResetSegmentAndContinuesTracking() {
+        let yesterday = date(year: 2026, month: 9, day: 3)
+        let today = date(year: 2026, month: 9, day: 4)
+        let resetsAt = date(year: 2026, month: 9, day: 7)
+        let corruptedSnapshot = UsageSnapshot(
+            schemaVersion: 2,
+            kind: .percentage,
+            remainingPercent: 28,
+            usedPercent: 72,
+            windowDurationMinutes: 10_080,
+            resetsAt: resetsAt,
+            fetchedAt: today.addingTimeInterval(10 * 60 * 60),
+            dailyUsage: DailyUsageState(
+                dayStartedAt: today,
+                segmentInitialRemainingPercent: 100,
+                accumulatedBeforeSegmentPercent: 3,
+                usedPercent: 75,
+                lastRemainingPercent: 28,
+                lastResetsAt: resetsAt
+            ),
+            dailyUsageHistory: [
+                DailyUsageDay(dayStartedAt: yesterday, usedPercent: 11),
+                DailyUsageDay(dayStartedAt: today, usedPercent: 75)
+            ]
+        )
+
+        let seed = DailyUsageTrackingRepair.prepare(
+            previous: corruptedSnapshot,
+            at: corruptedSnapshot.fetchedAt,
+            calendar: utcCalendar
+        )
+        let current = DailyUsageTracker.update(
+            previous: seed.dailyUsage,
+            with: percentageSnapshot(
+                remaining: 27,
+                fetchedAt: today.addingTimeInterval(10 * 60 * 60 + 15 * 60).timeIntervalSince1970,
+                resetsAt: resetsAt.addingTimeInterval(2).timeIntervalSince1970
+            ),
+            calendar: utcCalendar
+        )
+        let history = DailyUsageHistoryTracker.update(
+            previous: seed.dailyUsageHistory,
+            previousDailyUsage: seed.dailyUsage,
+            currentDailyUsage: current,
+            at: today.addingTimeInterval(10 * 60 * 60 + 15 * 60),
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(seed.dailyUsage?.segmentInitialRemainingPercent, 28)
+        XCTAssertEqual(seed.dailyUsage?.accumulatedBeforeSegmentPercent, 3)
+        XCTAssertEqual(seed.dailyUsage?.usedPercent, 3)
+        XCTAssertEqual(current?.usedPercent, 4)
+        XCTAssertEqual(history[5].usedPercent, 11)
+        XCTAssertEqual(history[6].usedPercent, 4)
+    }
+
+    func testDailyUsageRepairPreservesSameDayResetState() {
+        let today = date(year: 2026, month: 9, day: 4)
+        let resetsAt = today.addingTimeInterval(7 * 24 * 60 * 60 + 2 * 60 * 60)
+        let resetState = DailyUsageState(
+            dayStartedAt: today,
+            segmentInitialRemainingPercent: 100,
+            accumulatedBeforeSegmentPercent: 3,
+            usedPercent: 75,
+            lastRemainingPercent: 28,
+            lastResetsAt: resetsAt
+        )
+        let snapshot = UsageSnapshot(
+            schemaVersion: 2,
+            kind: .percentage,
+            remainingPercent: 28,
+            usedPercent: 72,
+            windowDurationMinutes: 10_080,
+            resetsAt: resetsAt,
+            fetchedAt: today.addingTimeInterval(3 * 60 * 60),
+            dailyUsage: resetState,
+            dailyUsageHistory: [
+                DailyUsageDay(dayStartedAt: today, usedPercent: 75)
+            ]
+        )
+
+        let seed = DailyUsageTrackingRepair.prepare(
+            previous: snapshot,
+            at: snapshot.fetchedAt,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(seed.dailyUsage, resetState)
+        XCTAssertEqual(seed.dailyUsageHistory, snapshot.dailyUsageHistory)
     }
 
     func testDailyUsageNeverMovesBackwardWhenRemainingIncreases() {

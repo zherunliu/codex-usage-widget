@@ -103,13 +103,17 @@ final class AppModel: ObservableObject {
                 as: RateLimitsReadResult.self
             )
             let fetchedSnapshot = try UsageSnapshotBuilder.build(from: result)
-            let previousDailyUsage = snapshot?.dailyUsage
+            let trackingSeed = DailyUsageTrackingRepair.prepare(
+                previous: snapshot,
+                at: fetchedSnapshot.fetchedAt
+            )
+            let previousDailyUsage = trackingSeed.dailyUsage
             let dailyUsage = DailyUsageTracker.update(
                 previous: previousDailyUsage,
                 with: fetchedSnapshot
             )
             let dailyUsageHistory = DailyUsageHistoryTracker.update(
-                previous: snapshot?.dailyUsageHistory,
+                previous: trackingSeed.dailyUsageHistory,
                 previousDailyUsage: previousDailyUsage,
                 currentDailyUsage: dailyUsage,
                 at: fetchedSnapshot.fetchedAt
