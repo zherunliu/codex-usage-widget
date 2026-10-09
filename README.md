@@ -93,6 +93,23 @@ If macOS continues to show an older widget after rebuilding, remove the widget a
 
 ## Development workflow
 
+### Package an unnotarized preview
+
+To build an ad-hoc signed Release app for Apple Silicon and Intel Macs:
+
+```bash
+bash scripts/package-unnotarized.sh
+```
+
+The script creates a ZIP and SHA-256 checksum in `build/releases/`, including
+the app, license, and [installation instructions](docs/unnotarized-release.md).
+It does not require a paid Apple Developer membership or submit the app to
+Apple. The build has no Developer ID signature or notarization, so macOS may
+block its first launch. Test the packaged app and widget on another Mac before
+publishing it for wider use.
+
+### Work on the Xcode project
+
 The Xcode project is generated from [`project.yml`](project.yml). Treat that file as the source of truth for targets, build settings, signing, and dependencies.
 
 Pressing <kbd>Command</kbd> + <kbd>R</kbd> does **not** run XcodeGen. It only builds the existing `.xcodeproj` and launches the app. Run the following command again after changing `project.yml`, adding a target, or making another project-structure change:
@@ -145,7 +162,8 @@ project.yml             XcodeGen project definition
 - The widget currently displays only the primary Codex usage limit.
 - The host app must run periodically to keep the shared snapshot fresh.
 - The project depends on the Codex CLI App Server protocol, so future Codex CLI changes may require compatibility updates.
-- A signed and notarized prebuilt release is not available yet; the app currently needs to be built from source.
+- A Developer ID-signed and notarized prebuilt release is not available yet.
+  An unnotarized preview can be packaged locally using the script above.
 
 ## Contributing
 
